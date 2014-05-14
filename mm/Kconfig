@@ -487,6 +487,21 @@ config FRONTSWAP
 
 	  If unsure, say Y to enable frontswap.
 
+config MAX_STACK_SIZE_MB
+	int "Maximum user stack size (MB)"
+	default 80
+	range 8 256 if METAG
+	range 8 2048
+	depends on STACK_GROWSUP
+	help
+	  This is the maximum stack size in Megabytes in the VM layout of user
+	  processes when the stack grows upwards (currently only on parisc and
+	  metag arch). The stack will be located at the highest memory address
+	  minus the given value, unless the RLIMIT_STACK hard limit is changed
+	  to a smaller value in which case that is used.
+
+	  A sane initial value is 80 MB.
+
 config CMA
 	bool "Contiguous Memory Allocator"
 	depends on HAVE_MEMBLOCK && MMU
