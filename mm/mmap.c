@@ -1779,7 +1779,8 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	struct vm_area_struct *vma;
 	unsigned long length, low_limit, high_limit, gap_start, gap_end;
 
-	length = info->length;
+	/* add one page to detect memory overwrites */
+	length = info->length + 1*PAGE_SIZE;
 
 	/*
 	 * Adjust search limits by the desired length.
