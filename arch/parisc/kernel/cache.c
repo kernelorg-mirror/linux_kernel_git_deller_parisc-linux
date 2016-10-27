@@ -321,10 +321,10 @@ void flush_dcache_page(struct page *page)
 
 	pgoff = page->index;
 
-	/* We have carefully arranged in arch_get_unmapped_area() that
-	 * *any* mappings of a file are always congruently mapped (whether
-	 * declared as MAP_PRIVATE or MAP_SHARED), so we only need
-	 * to flush one address here for them all to become coherent */
+	/* We have carefully arranged in arch_get_unmapped_area() that mappings
+	 * of a file are always congruently mapped (if declared as MAP_SHARED, not
+	 * MAP_PRIVATE), so we only need to flush one address here for them all to
+	 * become coherent */
 
 	flush_dcache_mmap_lock(mapping);
 	vma_interval_tree_foreach(mpnt, &mapping->i_mmap, pgoff, pgoff) {
@@ -344,7 +344,7 @@ void flush_dcache_page(struct page *page)
 		if (old_addr == 0 || (old_addr & (SHM_COLOUR - 1))
 				      != (addr & (SHM_COLOUR - 1))) {
 			__flush_cache_page(mpnt, addr, page_to_phys(page));
-			if (old_addr)
+			if (old_addr && (mpnt->vm_flags & VM_SHARED))
 				printk(KERN_ERR "INEQUIVALENT ALIASES 0x%lx and 0x%lx in file %pD\n", old_addr, addr, mpnt->vm_file);
 			old_addr = addr;
 		}

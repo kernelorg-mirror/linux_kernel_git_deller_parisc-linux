@@ -36,12 +36,11 @@
 #include <linux/personality.h>
 #include <linux/random.h>
 
-/* we construct an artificial offset for the mapping based on the physical
- * address of the kernel mapping variable */
+/* keep track of the last mapping address offset in the private_data field */
 #define GET_LAST_MMAP(filp)		\
-	(filp ? ((unsigned long) filp->f_mapping) >> 8 : 0UL)
+	(filp ? (unsigned long) filp->private_data : 0UL)
 #define SET_LAST_MMAP(filp, val)	\
-	 { /* nothing */ }
+	{ if (filp) filp->private_data = (void *) (val); }
 
 static int get_offset(unsigned int last_mmap)
 {
