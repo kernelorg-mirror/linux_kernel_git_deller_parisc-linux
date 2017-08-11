@@ -2141,8 +2141,16 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args)
 		case FORMAT_TYPE_NONE: {
 			int copy = read;
 			if (str < end) {
-				if (copy > end - str)
+				if (copy > (end - str))
 					copy = end - str;
+#if 0
+# 32-bit kernel only:
+# see 6a1a8b80728c3ae327a82a6cd772e0d554eebf2e
+[    0.101930] UBSAN: Undefined behaviour in /home/cvs/parisc/git-kernel/linus-linux-2.6/lib/vsprintf.c:2144:20
+[    0.101934] signed integer overflow:
+[    0.101940] -1854730013 - 292753636 cannot be represented in type 'int'
+[    0.101945] CPU: 0 PID: 0 Comm: swapper Not tainted 4.13.0-rc4-32bit+ #431
+#endif
 				memcpy(str, old_fmt, copy);
 			}
 			str += read;

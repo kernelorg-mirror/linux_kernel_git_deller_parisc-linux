@@ -286,6 +286,13 @@ static void handle_missaligned_access(struct type_mismatch_data *data,
 {
 	unsigned long flags;
 
+#if defined(CONFIG_PARISC)
+	/* maximum alignment on parisc is native word length. */
+	if (data->alignment > sizeof(unsigned long)
+			&& IS_ALIGNED(ptr, sizeof(unsigned long)))
+		return;
+#endif
+
 	if (suppress_report(&data->location))
 		return;
 
