@@ -943,6 +943,7 @@ static const char *const data_sections[] = { DATA_SECTIONS, NULL };
 	"*_template", /* scsi uses *_template a lot */			\
 	"*_timer",    /* arm uses ops structures named _timer a lot */	\
 	"*_sht",      /* scsi also used *_sht to some extent */		\
+	".L*", /* parisc local symbols */				\
 	"*_ops",							\
 	"*_probe",							\
 	"*_probe_one",							\
@@ -1025,6 +1026,9 @@ static const struct sectioncheck sectioncheck[] = {
 	.mismatch = DATA_TO_ANY_INIT,
 	.symbol_white_list = {
 		"*_template", "*_timer", "*_sht", "*_ops",
+#if defined(CONFIG_PARISC) && defined(CONFIG_64BIT)
+		".L*",
+#endif
 		"*_probe", "*_probe_one", "*_console", NULL
 	},
 },
