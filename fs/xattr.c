@@ -807,14 +807,20 @@ EXPORT_SYMBOL(xattr_full_name);
 /*
  * Allocate new xattr and copy in the value; but leave the name to callers.
  */
-struct simple_xattr *simple_xattr_alloc(const void *value, size_t size)
+struct simple_xattr *simple_xattr_alloc(const char *name, const void *value,
+	size_t size)
 {
 	struct simple_xattr *new_xattr;
-	size_t len;
+	size_t len, namelen;
+
+	namelen = strlen(name);
 
 	/* wrap around? */
-	len = sizeof(*new_xattr) + size;
-	if (len < sizeof(*new_xattr))
+	len = sizeof(*new_xattr) + namelen + 1;
+	if (len <= sizeof(*new_xattr))
+		return NULL;
+	len += size;
+	if (len <= sizeof(*new_xattr))
 		return NULL;
 
 	new_xattr = kmalloc(len, GFP_KERNEL);
@@ -822,7 +828,8 @@ struct simple_xattr *simple_xattr_alloc(const void *value, size_t size)
 		return NULL;
 
 	new_xattr->size = size;
-	memcpy(new_xattr->value, value, size);
+	strcpy(new_xattr->name, name);
+	memcpy(&new_xattr->name[namelen + 1], value, size);
 	return new_xattr;
 }
 
@@ -837,15 +844,19 @@ int simple_xattr_get(struct simple_xattrs *xattrs, const char *name,
 
 	spin_lock(&xattrs->lock);
 	list_for_each_entry(xattr, &xattrs->head, list) {
+		const char *value;
+
 		if (strcmp(name, xattr->name))
 			continue;
 
+		value = strchr(xattr->name, 0);
+		value++;
 		ret = xattr->size;
 		if (buffer) {
 			if (size < xattr->size)
 				ret = -ERANGE;
 			else
-				memcpy(buffer, xattr->value, xattr->size);
+				memcpy(buffer, value, xattr->size);
 		}
 		break;
 	}
@@ -876,15 +887,9 @@ int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
 
 	/* value == NULL means remove */
 	if (value) {
-		new_xattr = simple_xattr_alloc(value, size);
+		new_xattr = simple_xattr_alloc(name, value, size);
 		if (!new_xattr)
 			return -ENOMEM;
-
-		new_xattr->name = kstrdup(name, GFP_KERNEL);
-		if (!new_xattr->name) {
-			kfree(new_xattr);
-			return -ENOMEM;
-		}
 	}
 
 	spin_lock(&xattrs->lock);
@@ -910,10 +915,8 @@ int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
 	}
 out:
 	spin_unlock(&xattrs->lock);
-	if (xattr) {
-		kfree(xattr->name);
+	if (xattr)
 		kfree(xattr);
-	}
 	return err;
 
 }

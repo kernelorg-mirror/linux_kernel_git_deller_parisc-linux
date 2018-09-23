@@ -71,10 +71,24 @@ struct simple_xattrs {
 
 struct simple_xattr {
 	struct list_head list;
-	char *name;
 	size_t size;
-	char value[0];
+	char name[0]; /* value stored behind NUL-terminated name */
 };
+
+/*
+ * allocated size of simple_xattr structure
+ */
+static inline size_t simple_xattr_size(struct simple_xattrs *xattrs)
+{
+	size_t size;
+
+	size = sizeof(struct simple_xattr);
+	size += strlen(xattrs->name) + 1;
+	size += xattrs->size;
+	/* align to size of a block */
+	size = ALIGN(size, 512);
+	return size;
+}
 
 /*
  * initialize the simple_xattrs structure
@@ -98,7 +112,8 @@ static inline void simple_xattrs_free(struct simple_xattrs *xattrs)
 	}
 }
 
-struct simple_xattr *simple_xattr_alloc(const void *value, size_t size);
+struct simple_xattr *simple_xattr_alloc(const char *name, const void *value,
+					size_t size);
 int simple_xattr_get(struct simple_xattrs *xattrs, const char *name,
 		     void *buffer, size_t size);
 int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,

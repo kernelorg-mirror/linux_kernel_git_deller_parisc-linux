@@ -3107,27 +3107,23 @@ static int shmem_initxattrs(struct inode *inode,
 	struct shmem_inode_info *info = SHMEM_I(inode);
 	const struct xattr *xattr;
 	struct simple_xattr *new_xattr;
+	char *name;
 	size_t len;
 
 	for (xattr = xattr_array; xattr->name != NULL; xattr++) {
-		new_xattr = simple_xattr_alloc(xattr->value, xattr->value_len);
+		len = strlen(xattr->name) + 1;
+		name = kmalloc(XATTR_SECURITY_PREFIX_LEN + len, GFP_KERNEL);
+		if (!name)
+			return -ENOMEM;
+		memcpy(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN);
+		memcpy(name + XATTR_SECURITY_PREFIX_LEN, xattr->name, len);
+
+		new_xattr = simple_xattr_alloc(name, xattr->value, xattr->value_len);
 		if (!new_xattr)
 			return -ENOMEM;
 
-		len = strlen(xattr->name) + 1;
-		new_xattr->name = kmalloc(XATTR_SECURITY_PREFIX_LEN + len,
-					  GFP_KERNEL);
-		if (!new_xattr->name) {
-			kfree(new_xattr);
-			return -ENOMEM;
-		}
-
-		memcpy(new_xattr->name, XATTR_SECURITY_PREFIX,
-		       XATTR_SECURITY_PREFIX_LEN);
-		memcpy(new_xattr->name + XATTR_SECURITY_PREFIX_LEN,
-		       xattr->name, len);
-
 		simple_xattr_list_add(&info->xattrs, new_xattr);
+		// HELGE
 	}
 
 	return 0;
@@ -3151,8 +3147,47 @@ static int shmem_xattr_handler_set(const struct xattr_handler *handler,
 	struct shmem_inode_info *info = SHMEM_I(inode);
 
 	name = xattr_full_name(handler, name);
-	return simple_xattr_set(&info->xattrs, name, value, size, flags);
+	return simple_xattr_set(&info->xattrs, name, value, size, flags); // HELGE
 }
+
+static inline size_t simple_xattrs_size(struct simple_xattrs *xattrs)
+{
+	struct simple_xattr *xattr, *node;
+	size_t size = 0;
+
+	list_for_each_entry_safe(xattr, node, &xattrs->head, list) {
+		size += sizeof(struct simple_xattr);
+		size += strlen(xattr->name);
+		size += xattr->size;
+	}
+
+	return size;
+}
+
+static int shmem_user_xattr_handler_set(const struct xattr_handler *handler,
+				   struct dentry *unused, struct inode *inode,
+				   const char *name, const void *value,
+				   size_t size, int flags)
+{
+	struct shmem_inode_info *info = SHMEM_I(inode);
+	size_t total_size;
+
+	total_size = simple_xattrs_size(&info->xattrs);
+
+	/* Prevent user xattrs on unlimited tmpfs */
+	// if (!sbinfo->max_blocks)
+printk("total size for %s is %zu size=%zu  strlen=%zu\n", name, total_size, size, strlen(name));
+	if (total_size > PAGE_SIZE)
+		return -ENOSPC; // HELGE ENOSPC
+
+	return shmem_xattr_handler_set(handler, unused, inode, name, value, size, flags);
+}
+
+static const struct xattr_handler shmem_user_xattr_handler = {
+	.prefix = XATTR_USER_PREFIX,
+	.get = shmem_xattr_handler_get,
+	.set = shmem_user_xattr_handler_set,
+};
 
 static const struct xattr_handler shmem_security_xattr_handler = {
 	.prefix = XATTR_SECURITY_PREFIX,
@@ -3171,6 +3206,7 @@ static const struct xattr_handler *shmem_xattr_handlers[] = {
 	&posix_acl_access_xattr_handler,
 	&posix_acl_default_xattr_handler,
 #endif
+	&shmem_user_xattr_handler,
 	&shmem_security_xattr_handler,
 	&shmem_trusted_xattr_handler,
 	NULL
