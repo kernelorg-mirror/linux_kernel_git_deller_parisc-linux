@@ -298,4 +298,6 @@ typedef struct {
 
 } hp_i8042_sdc;
 
+struct device *hp_sdc_get_sdc_device(void);
+
 #endif /* _LINUX_HP_SDC_H */

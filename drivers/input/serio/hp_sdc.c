@@ -110,6 +110,17 @@ MODULE_PARM_DESC(no_hpsdc, "Do not enable HP SDC driver.");
 
 static hp_i8042_sdc	hp_sdc;	/* All driver state is kept in here. */
 
+struct device *hp_sdc_get_sdc_device(void)
+{
+#if defined(__hppa__)
+	return &hp_sdc.dev->dev;
+#elif defined(__mc68000__)
+	/* hp_sdc.dev is 1, so return NULL instead. */
+	return NULL;
+#endif
+}
+EXPORT_SYMBOL(hp_sdc_get_sdc_device);
+
 /*************** primitives for use in any context *********************/
 static inline uint8_t hp_sdc_status_in8(void)
 {
