@@ -158,6 +158,11 @@ parisc_agp_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 			info->gatt[j] =
 				parisc_agp_mask_memory(agp_bridge,
 					paddr, type);
+			asm_io_fdc(&info->gatt[j]);
+#if 1
+			printk("i %x j %lx page %p va %px  paddr 0x%lx gatt 0x%llx\n",
+				i, j, mem->pages[i], __va(paddr), paddr, info->gatt[j]);
+#endif
 		}
 	}
 
@@ -180,7 +185,7 @@ parisc_agp_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 	io_pg_start = info->io_pages_per_kpage * pg_start;
 	io_pg_count = info->io_pages_per_kpage * mem->page_count;
 	for (i = io_pg_start; i < io_pg_count + io_pg_start; i++) {
-		info->gatt[i] = agp_bridge->scratch_page;
+		// info->gatt[i] = agp_bridge->scratch_page;
 	}
 
 	agp_bridge->driver->tlb_flush(mem);
@@ -191,7 +196,16 @@ static unsigned long
 parisc_agp_mask_memory(struct agp_bridge_data *bridge, dma_addr_t addr,
 		       int type)
 {
-	return SBA_PDIR_VALID_BIT | addr;
+	u64 pa;
+	unsigned ci; /* coherent index */
+
+	pa = addr & IOVP_MASK;
+	asm("lci 0(%1), %0" : "=r" (ci) : "r" (__va(pa)));
+
+	pa |= (ci >> PAGE_SHIFT) & 0xff; /* move CI (8 bits) into lowest byte */
+	pa |= SBA_PDIR_VALID_BIT;	/* set "valid" bit */
+
+	return cpu_to_le64(pa);
 }
 
 static void
