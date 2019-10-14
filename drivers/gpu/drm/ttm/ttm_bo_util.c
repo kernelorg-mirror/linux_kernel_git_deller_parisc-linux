@@ -610,8 +610,14 @@ static int ttm_bo_kmap_ttm(struct ttm_buffer_object *bo,
 		 */
 		prot = ttm_io_prot(mem->placement, PAGE_KERNEL);
 		map->bo_kmap_type = ttm_bo_map_vmap;
+		printk("vmap %p\n", ttm->pages[start_page]);
+#if 0
 		map->virtual = vmap(ttm->pages + start_page, num_pages,
 				    0, prot);
+#else
+		// This is needed to be able to get the virtual address with __va(pa).
+		map->virtual = kmap(ttm->pages[start_page]);
+#endif
 	}
 	return (!map->virtual) ? -ENOMEM : 0;
 }
