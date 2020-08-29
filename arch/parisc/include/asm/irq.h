@@ -22,7 +22,8 @@
 #endif
 
 #define TIMER_IRQ	(CPU_IRQ_BASE + 0)
-#define	IPI_IRQ		(CPU_IRQ_BASE + 1)
+#define IPI_IRQ		(CPU_IRQ_BASE + 1)
+#define NMI_IRQ		(CPU_IRQ_BASE + 2)
 #define CPU_IRQ_MAX	(CPU_IRQ_BASE + (BITS_PER_LONG - 1))
 
 #define NR_IRQS		(CPU_IRQ_MAX + 1)
@@ -49,5 +50,11 @@ extern int cpu_check_affinity(struct irq_data *d, const struct cpumask *dest);
 
 /* soft power switch support (power.c) */
 extern struct tasklet_struct power_tasklet;
+
+#ifdef CONFIG_SMP
+extern void arch_trigger_cpumask_backtrace(const cpumask_t *mask,
+					   bool exclude_self);
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
+#endif
 
 #endif	/* _ASM_PARISC_IRQ_H */

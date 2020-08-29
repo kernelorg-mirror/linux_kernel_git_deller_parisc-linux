@@ -62,7 +62,7 @@ static volatile int cpu_now_booting;
 
 static int parisc_max_cpus = 1;
 
-static DEFINE_PER_CPU(spinlock_t, ipi_lock);
+static DEFINE_PER_CPU(spinlock_t, ipi_lock) = __SPIN_LOCK_UNLOCKED(ipi_lock);
 
 enum ipi_message_type {
 	IPI_NOP=0,

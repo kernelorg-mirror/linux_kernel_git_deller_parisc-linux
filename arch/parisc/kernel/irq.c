@@ -22,7 +22,12 @@
 
 #undef PARISC_IRQ_CR16_COUNTS
 
+#define IRQ_DISABLE()	asm volatile("rsm %0,%%r0\n" : : "i" (PSW_I) : "memory")
+#define IRQ_ENABLE()	asm volatile("ssm %0,%%r0\n" : : "i" (PSW_I) : "memory")
+#define IRQ_STATUS()	({ unsigned long flags; asm volatile("ssm 0,%0\n" : "=r" (flags) :: "memory"); (flags & PSW_I); })
+
 extern irqreturn_t timer_interrupt(int, void *);
+extern irqreturn_t nmi_interrupt(int, void *);
 extern irqreturn_t ipi_interrupt(int, void *);
 
 #define EIEM_MASK(irq)       (1UL<<(CPU_IRQ_MAX - irq))
@@ -507,7 +512,7 @@ void do_softirq_own_stack(void)
 void do_cpu_irq_mask(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs;
-	unsigned long eirr_val;
+	unsigned long eirr_val, old_status;
 	int irq, cpu = smp_processor_id();
 	struct irq_data *irq_data;
 #ifdef CONFIG_SMP
@@ -515,10 +520,13 @@ void do_cpu_irq_mask(struct pt_regs *regs)
 #endif
 
 	old_regs = set_irq_regs(regs);
-	local_irq_disable();
 	irq_enter();
 
 	eirr_val = mfctl(23) & cpu_eiem & per_cpu(local_ack_eiem, cpu);
+	old_status = arch_local_irq_save();
+	// we could enable irqs again:
+	// IRQ_ENABLE();
+
 	if (!eirr_val)
 		goto set_out;
 	irq = eirr_to_irq(eirr_val);
@@ -553,6 +561,7 @@ void do_cpu_irq_mask(struct pt_regs *regs)
  out:
 	irq_exit();
 	set_irq_regs(old_regs);
+	arch_local_irq_restore(old_status);
 	return;
 
  set_out:
@@ -573,6 +582,9 @@ static void claim_cpu_irqs(void)
 	irq_set_handler(TIMER_IRQ, handle_percpu_irq);
 	if (request_irq(TIMER_IRQ, timer_interrupt, flags, "timer", NULL))
 		pr_err("Failed to register timer interrupt\n");
+	irq_set_handler(NMI_IRQ, handle_percpu_irq);
+	if (request_irq(NMI_IRQ, nmi_interrupt, IRQF_PERCPU, "NMI", NULL))
+		pr_err("Failed to register NMI interrupt\n");
 #ifdef CONFIG_SMP
 	irq_set_handler(IPI_IRQ, handle_percpu_irq);
 	if (request_irq(IPI_IRQ, ipi_interrupt, IRQF_PERCPU, "IPI", NULL))
@@ -582,16 +594,110 @@ static void claim_cpu_irqs(void)
 
 void __init init_IRQ(void)
 {
-	local_irq_disable();	/* PARANOID - should already be disabled */
+	int cpu = smp_processor_id();
+
+	IRQ_DISABLE();		/* PARANOID - should already be disabled */
 	mtctl(~0UL, 23);	/* EIRR : clear all pending external intr */
 #ifdef CONFIG_SMP
 	if (!cpu_eiem) {
 		claim_cpu_irqs();
-		cpu_eiem = EIEM_MASK(IPI_IRQ) | EIEM_MASK(TIMER_IRQ);
+		cpu_eiem = EIEM_MASK(IPI_IRQ) | EIEM_MASK(TIMER_IRQ) | EIEM_MASK(NMI_IRQ);
 	}
 #else
 	claim_cpu_irqs();
-	cpu_eiem = EIEM_MASK(TIMER_IRQ);
+	cpu_eiem = EIEM_MASK(TIMER_IRQ) | EIEM_MASK(NMI_IRQ);
 #endif
-        set_eiem(cpu_eiem);	/* EIEM : enable all external intr */
+	per_cpu(local_ack_eiem, cpu) = EIEM_MASK(NMI_IRQ);
+	set_eiem(cpu_eiem & per_cpu(local_ack_eiem, cpu));	/* EIEM : enable all external intr */
+	/* enable external IRQs again */
+	IRQ_ENABLE();
+}
+
+
+#include <asm/special_insns.h>
+
+inline unsigned long notrace arch_local_save_flags(void)
+{
+	int cpu = smp_processor_id();
+	return per_cpu(local_ack_eiem, cpu);
+}
+EXPORT_SYMBOL(arch_local_save_flags);
+
+inline void notrace arch_local_irq_disable(void)
+{
+	int cpu = smp_processor_id();
+	per_cpu(local_ack_eiem, cpu) = EIEM_MASK(NMI_IRQ);
+	set_eiem(EIEM_MASK(NMI_IRQ));
+}
+EXPORT_SYMBOL(arch_local_irq_disable);
+
+void notrace arch_local_irq_enable(void)
+{
+	int cpu = smp_processor_id();
+	per_cpu(local_ack_eiem, cpu) = ~0UL;
+	set_eiem(cpu_eiem);
+// printk("3 INTERRUPTS ARE %lx\n", IRQ_STATUS());
+//	mtctl(~cpu_eiem, 23);	/* EIRR : clear other pending external intr */
+	IRQ_ENABLE(); /* why is this needed? */
+}
+EXPORT_SYMBOL(arch_local_irq_enable);
+
+unsigned long notrace arch_local_irq_save(void)
+{
+	unsigned long flags;
+	flags = arch_local_save_flags();
+	arch_local_irq_disable();
+	return flags;
+}
+EXPORT_SYMBOL(arch_local_irq_save);
+
+void notrace arch_local_irq_restore(unsigned long flags)
+{
+	int cpu = smp_processor_id();
+	per_cpu(local_ack_eiem, cpu) = flags;
+	set_eiem(cpu_eiem & flags);
+}
+EXPORT_SYMBOL(arch_local_irq_restore);
+
+inline bool notrace arch_irqs_disabled_flags(unsigned long flags)
+{
+	return (flags & ~EIEM_MASK(NMI_IRQ)) == 0;
+}
+EXPORT_SYMBOL(arch_irqs_disabled_flags);
+
+bool notrace arch_irqs_disabled(void)
+{
+	return arch_irqs_disabled_flags(arch_local_save_flags());
+}
+EXPORT_SYMBOL(arch_irqs_disabled);
+
+
+#include <linux/nmi.h>
+
+/* NMI interrupt */
+irqreturn_t __irq_entry nmi_interrupt(int irq, void *dev_id)
+{
+	printk_nmi_enter();
+	irq_enter();
+	nmi_cpu_backtrace(get_irq_regs());
+	irq_exit();
+	printk_nmi_exit();
+
+	return IRQ_HANDLED;
+}
+
+static void raise_nmi(cpumask_t *mask)
+{
+	int cpu;
+
+	for_each_cpu(cpu, mask) {
+		struct cpuinfo_parisc *p = &per_cpu(cpu_data, cpu);
+
+		gsc_writel(NMI_IRQ - CPU_IRQ_BASE, p->hpa);
+	}
+}
+
+void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
+{
+	nmi_trigger_cpumask_backtrace(mask, exclude_self, raise_nmi);
 }
