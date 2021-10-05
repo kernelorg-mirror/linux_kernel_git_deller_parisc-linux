@@ -147,11 +147,12 @@ static const struct sysrq_key_op sysrq_unraw_op = {
 #define sysrq_unraw_op (*(const struct sysrq_key_op *)NULL)
 #endif /* CONFIG_VT */
 
+unsigned long *hpmc_addr;
 static void sysrq_handle_crash(int key)
 {
 	/* release the RCU read lock before crashing */
 	rcu_read_unlock();
-
+	pr_err("foo: %lx\n", *hpmc_addr);
 	panic("sysrq triggered crash\n");
 }
 static const struct sysrq_key_op sysrq_crash_op = {
@@ -1185,6 +1186,7 @@ static int __init sysrq_init(void)
 {
 	sysrq_init_procfs();
 
+	hpmc_addr = ioremap((phys_addr_t) 0xfffffff0e0000000UL, 4096);
 	if (sysrq_on())
 		sysrq_register_handler();
 
