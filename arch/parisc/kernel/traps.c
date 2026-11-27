@@ -422,6 +422,12 @@ void parisc_terminate(char *msg, struct pt_regs *regs, int code, unsigned long o
 {
 	static DEFINE_SPINLOCK(terminate_lock);
 
+	/*
+	 * Print synchronously on nbcon consoles. Interrupts are off from
+	 * here on, so the console printer thread would never be woken.
+	 */
+	oops_enter();
+
 	(void)notify_die(DIE_OOPS, msg, regs, 0, code, SIGTRAP);
 	bust_spinlocks(1);
 
