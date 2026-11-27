@@ -79,6 +79,7 @@ ENTRY(os_hpmc)
 	 *   Using callee saves registers without saving them.  The
 	 *   original values are in the pim dump if we need them.
 	 *
+	 *   r1   scratch
 	 *   r2   (rp)  return pointer
 	 *   r3   address of PDCE_PROC
 	 *   r4   scratch
@@ -114,7 +115,20 @@ ENTRY(os_hpmc)
 	/* Setup stack pointer. */
 
 	load32	PA(hpmc_stack),sp
-	
+
+#ifdef CONFIG_SMP
+	/*
+	 * Use this CPU's toc_stack. PA(toc_stack) by itself is the per-cpu
+	 * template in the init section, which is freed after boot.
+	 */
+	mfctl	%cr30, %r1
+	tophys	%r1,%r4			/* task_struct */
+	ldw	TASK_TI_CPU(%r4),%r4	/* cpu */
+	load32	PA(__per_cpu_offset),%r1
+	LDREGX	%r4(%r1),%r4
+	add	%r4,sp,sp
+#endif
+
 	ldo     128(sp),sp /* leave room for arguments */
 
 	/*
