@@ -24,6 +24,7 @@
 #include <linux/percpu.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/topology.h>
 #include <linux/uaccess.h>
 #include <asm/perf.h>
 #include <asm/special_insns.h>
@@ -39,6 +40,25 @@
 #define MAKO_CCR_PERF		0x20
 
 /*
+ * The cycle signal of ctr1, ctr3 and ctr2 can be qualified by stall
+ * cycles: RDR16_1 bit 291 does this for the first core of a processor and
+ * bit 275 for the second. Each garbles the other core's counts, so only
+ * the bit of the core being programmed is set. Clearing bit 559 qualifies
+ * the signal by non-stall cycles on the first core; on the second it stops
+ * all four counters. There, setting bit 324 together with bit 275 turns
+ * the stall qualifier of ctr1 and ctr3 into a non-stall one, and bit 21
+ * then qualifies ctr2 the same way.
+ *
+ * Setting RDR16_1 bit 408 and clearing bit 415 makes ctr1 and ctr3 count
+ * the cycles spent handling TLB misses, and ctr2 about one per miss. This
+ * works only on the first core; on the second it stops all four counters.
+ *
+ * RDR4_0 compares each retiring instruction against a match value under a
+ * mask and gates ctr2 with the result. Instruction bit j (0 is the most
+ * significant) has its mask bit at 145 - j and its match bit at 108 + j
+ * for j <= 18, and at 282 - j and 205 + j above that. A set mask bit
+ * means don't care. Bit 19 inverts the comparison.
+ *
  * RDR4_0 bits 0-7 select what ctr0 counts. With bit 3 clear it counts TLB
  * misses; bit 6 leaves out the data TLB misses and bit 7 the instruction
  * TLB misses. With bit 3 set it counts retired instructions that are not
@@ -48,6 +68,14 @@
  * RDR bits are numbered from the most significant bit of the first
  * doubleword.
  */
+#define MAKO_RDR16_1_STALL_A	291
+#define MAKO_RDR16_1_STALL_B	275
+#define MAKO_RDR16_1_NONSTALL	559
+#define MAKO_RDR16_1_NONSTALL_B	324
+#define MAKO_RDR16_1_NONSTALL_B_CTR2	21
+#define MAKO_RDR16_1_TLB_HANDLER	408
+#define MAKO_RDR16_1_TLB_HANDLER_CLR	415
+#define MAKO_RDR4_0_INVERT	19
 #define MAKO_RDR4_0_CTR0_INSNS	3
 #define MAKO_RDR4_0_CTR0_NO_DTLB	6
 #define MAKO_RDR4_0_CTR0_NO_ITLB	7
@@ -56,12 +84,22 @@ struct perf_mako_cpu {
 	bool			loaded;
 	struct perf_mako_config	cfg;
 	uint64_t		rdr4_0[ARRAY_SIZE(perf_mako_rdr4_0)];
+	uint64_t		rdr16_1[ARRAY_SIZE(perf_mako_rdr16_1)];
 };
 
 static DEFINE_PER_CPU(struct perf_mako_cpu, perf_mako_cpu);
 
 /* /dev/perf loads the default configuration. */
 static const struct perf_mako_config perf_mako_dev_cfg;
+
+/*
+ * RDR16_1 is shared by the two cores of a processor, and each load writes
+ * all of it, so a load on one core undoes the event set the other core
+ * selected. Record per processor, at perf_mako_chip_cpu(), which core's
+ * set RDR16_1 holds: the default set is the same for both cores. Loads
+ * are serialized by the chain 1 handshake.
+ */
+static DEFINE_PER_CPU(int, perf_mako_rdr16_1_key);
 
 /* /dev/perf and perf events must not program the counters at once. */
 static DEFINE_SPINLOCK(perf_mako_owner_lock);
@@ -109,9 +147,37 @@ void perf_mako_pmu_put(void)
 }
 
 /* The second core of a processor, which owns the second half of RDR15_1. */
-static bool perf_mako_core_b(void)
+bool perf_mako_core_b(void)
 {
 	return perf_get_dr2() & MAKO_DR2_CORE;
+}
+
+/*
+ * The first CPU of cpu's processor, where data shared by the processor's
+ * cores is kept. The package id stays the same while a CPU is offline.
+ */
+int perf_mako_chip_cpu(int cpu)
+{
+	int id = topology_physical_package_id(cpu), c;
+
+	for_each_possible_cpu(c)
+		if (topology_physical_package_id(c) == id)
+			return c;
+
+	return cpu;
+}
+
+static int perf_mako_key(const struct perf_mako_config *cfg)
+{
+	if (cfg->set == MAKO_EVENTS_DEFAULT)
+		return 0;
+	return cfg->set | perf_mako_core_b() << 4;
+}
+
+static int *perf_mako_chip_key(void)
+{
+	return per_cpu_ptr(&perf_mako_rdr16_1_key,
+			   perf_mako_chip_cpu(smp_processor_id()));
 }
 
 static void perf_mako_set_bit(uint64_t *buf, unsigned int bit, bool val)
@@ -124,10 +190,16 @@ static void perf_mako_set_bit(uint64_t *buf, unsigned int bit, bool val)
 		buf[bit / 64] &= ~m;
 }
 
-/* Build this CPU's copy of RDR4_0 for cfg. */
-static void perf_mako_build(struct perf_mako_cpu *pc,
-			    const struct perf_mako_config *cfg)
+/* Build this CPU's copies of RDR4_0 and RDR16_1 for cfg. */
+static int perf_mako_build(struct perf_mako_cpu *pc,
+			   const struct perf_mako_config *cfg)
 {
+	bool core_b = perf_mako_core_b();
+	unsigned int j;
+
+	if (cfg->set == MAKO_EVENTS_TLB_HANDLER && core_b)
+		return -EOPNOTSUPP;
+
 	memcpy(pc->rdr4_0, perf_mako_rdr4_0, sizeof(pc->rdr4_0));
 	if (cfg->ctr0 == MAKO_CTR0_DTLB)
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_ITLB, true);
@@ -135,6 +207,34 @@ static void perf_mako_build(struct perf_mako_cpu *pc,
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_DTLB, true);
 	else if (cfg->ctr0 == MAKO_CTR0_INSNS)
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_INSNS, true);
+	if (cfg->filter) {
+		for (j = 0; j < 32; j++) {
+			uint32_t b = 1U << (31 - j);
+
+			perf_mako_set_bit(pc->rdr4_0, j <= 18 ? 145 - j : 282 - j,
+					  !(cfg->mask & b));
+			perf_mako_set_bit(pc->rdr4_0, j <= 18 ? 108 + j : 205 + j,
+					  cfg->match & b);
+		}
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_INVERT, cfg->invert);
+	}
+
+	memcpy(pc->rdr16_1, perf_mako_rdr16_1, sizeof(pc->rdr16_1));
+	if (cfg->set == MAKO_EVENTS_STALL) {
+		perf_mako_set_bit(pc->rdr16_1, core_b ? MAKO_RDR16_1_STALL_B :
+				  MAKO_RDR16_1_STALL_A, true);
+	} else if (cfg->set == MAKO_EVENTS_NONSTALL && core_b) {
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_STALL_B, true);
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_NONSTALL_B, true);
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_NONSTALL_B_CTR2, true);
+	} else if (cfg->set == MAKO_EVENTS_NONSTALL) {
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_NONSTALL, false);
+	} else if (cfg->set == MAKO_EVENTS_TLB_HANDLER) {
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_TLB_HANDLER, true);
+		perf_mako_set_bit(pc->rdr16_1, MAKO_RDR16_1_TLB_HANDLER_CLR, false);
+	}
+
+	return 0;
 }
 
 /*
@@ -244,7 +344,9 @@ int perf_mako_load(const struct perf_mako_config *cfg)
 	int i, ret;
 
 	lockdep_assert_irqs_disabled();
-	perf_mako_build(pc, cfg);
+	ret = perf_mako_build(pc, cfg);
+	if (ret)
+		return ret;
 	if (pc->loaded)
 		perf_intrigue_disable_perf_counters();
 	pc->loaded = false;
@@ -268,12 +370,15 @@ int perf_mako_load(const struct perf_mako_config *cfg)
 			perf_mako_ctrs_rw(ctrs, true);
 		else if (r->chain == 0 && r->rdr == 4)
 			perf_mako_rdr_merge(r, pc->rdr4_0);
+		else if (r->chain == 1 && r->rdr == 16)
+			perf_mako_rdr_merge(r, pc->rdr16_1);
 		else
 			perf_mako_rdr_merge(r, r->data);
 	}
 	perf_mako_config_bit(false);
 
 	asm volatile("pmenb" ::: "memory");
+	WRITE_ONCE(*perf_mako_chip_key(), perf_mako_key(cfg));
 	perf_mako_chain1_put();
 	pc->cfg = *cfg;
 	pc->loaded = true;
@@ -331,7 +436,10 @@ void perf_mako_disable(void)
 static bool perf_mako_cfg_equal(const struct perf_mako_config *a,
 				const struct perf_mako_config *b)
 {
-	return a->ctr0 == b->ctr0;
+	return a->set == b->set && a->ctr0 == b->ctr0 &&
+	       a->filter == b->filter &&
+	       (!a->filter || (a->invert == b->invert &&
+			       a->mask == b->mask && a->match == b->match));
 }
 
 /*
@@ -342,7 +450,8 @@ bool perf_mako_is_loaded(const struct perf_mako_config *cfg)
 {
 	struct perf_mako_cpu *pc = this_cpu_ptr(&perf_mako_cpu);
 
-	return pc->loaded && perf_mako_cfg_equal(&pc->cfg, cfg);
+	return pc->loaded && perf_mako_cfg_equal(&pc->cfg, cfg) &&
+	       READ_ONCE(*perf_mako_chip_key()) == perf_mako_key(cfg);
 }
 
 /* PA_PERF_ON: load the default configuration, or restart. */

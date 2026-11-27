@@ -12,6 +12,25 @@ void perf_mako_rdr_write(unsigned long index, uint64_t value);
 void perf_intrigue_enable_perf_counters(void);
 void perf_intrigue_disable_perf_counters(void);
 
+/*
+ * Event sets, which select what ctr1, ctr2 and ctr3 count. Counters are
+ * listed ctr0 to ctr3.
+ *
+ * DEFAULT:     TLB misses, cycles, instructions retired, cycles
+ * STALL:       TLB misses, stall cycles, 0, stall cycles
+ * NONSTALL:    TLB misses, non-stall cycles, instructions retired in
+ *              non-stall cycles, non-stall cycles
+ * TLB_HANDLER: TLB misses, cycles in TLB miss handling, about one per
+ *              miss, cycles in TLB miss handling. Only on the first core
+ *              of a processor.
+ */
+enum {
+	MAKO_EVENTS_DEFAULT,
+	MAKO_EVENTS_STALL,
+	MAKO_EVENTS_NONSTALL,
+	MAKO_EVENTS_TLB_HANDLER,
+};
+
 /* What ctr0 counts */
 enum {
 	MAKO_CTR0_TLB,		/* TLB misses, instruction and data */
@@ -20,8 +39,18 @@ enum {
 	MAKO_CTR0_INSNS,	/* instructions retired and not nullified */
 };
 
+/*
+ * With filter set, ctr2 counts only the retired instructions whose bits
+ * selected by mask equal those of match, or with invert all other
+ * instructions. Nullified instructions count.
+ */
 struct perf_mako_config {
+	unsigned int	set;		/* MAKO_EVENTS_* */
 	unsigned int	ctr0;		/* MAKO_CTR0_* */
+	bool		filter;
+	bool		invert;
+	uint32_t	mask;
+	uint32_t	match;
 };
 
 /* perf_mako.c, with interrupts off */
@@ -30,6 +59,8 @@ int perf_mako_read(uint32_t *c);
 void perf_mako_enable(void);
 void perf_mako_disable(void);
 bool perf_mako_is_loaded(const struct perf_mako_config *cfg);
+bool perf_mako_core_b(void);
+int perf_mako_chip_cpu(int cpu);
 
 /* Exclusion between /dev/perf and perf events */
 bool perf_mako_dev_get(void);
