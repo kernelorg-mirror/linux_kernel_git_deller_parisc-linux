@@ -171,6 +171,9 @@ os_hpmc_1:
 	load32	PA(hpmc_pim_data),arg3
 	load32	HPMC_PIM_DATA_SIZE,%r4
 	stw     %r4,-52(sp)
+#ifdef CONFIG_64BIT
+	copy	%r4,%r22			/* arg4 for wide firmware */
+#endif
 
 	ldil    L%PA(os_hpmc_2), rp
 	bv      (r3)                            /* call pdce_proc */
@@ -186,6 +189,9 @@ os_hpmc_2:
 	ldo     0(%r0),arg2                     /* reserved */
 	ldo     0(%r0),arg3                     /* reserved */
 	stw     %r0,-52(sp)                     /* reserved */
+#ifdef CONFIG_64BIT
+	copy	%r0,%r22			/* arg4 for wide firmware */
+#endif
 
 	ldil    L%PA(os_hpmc_3),rp
 	bv      (%r3)                           /* call pdce_proc */
