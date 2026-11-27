@@ -17,13 +17,12 @@
  * have the option to examine and print values from memory that
  * would help in debugging an HPMC caused by a software bug.
  *
- * There is more to do here:
+ * Only the first CPU to take an HPMC runs this handler. Any other CPU
+ * that takes one, at the same time or later, spins forever, as PDC,
+ * IODC and the buffers below are not safe to use from two CPUs at once.
  *
- *      1) On MP systems we need to synchronize processors
- *         before calling pdc/iodc.
- *      2) We should be checking the system state and not
- *         returning to the fault handler if things are really
- *         bad.
+ * It should also check the system state and not return to the fault
+ * handler if things are really bad.
  *
  */
 
@@ -57,6 +56,12 @@ hpmc_iodc_buf:
 	.align 8
 hpmc_raddr:
 	.block 128
+
+	/* Cleared by the first CPU to enter os_hpmc. */
+	.section .data
+	.align 16
+hpmc_lock:
+	.word 1
 
 #define HPMC_PIM_DATA_SIZE 896 /* Enough to hold all architected 2.0 state */
 
@@ -96,6 +101,11 @@ ENTRY(os_hpmc)
 	 *   r28  (ret0) return value from procedure
 	 */
 
+	load32	PA(hpmc_lock),%r4
+1:	LDCW	0(%r4),%r5
+	cmpib,=	0,%r5,1b
+	nop
+
 	copy    arg0, %r3       /* save address of PDCE_PROC */
 
 	/*
@@ -109,8 +119,6 @@ ENTRY(os_hpmc)
 	ldw     52(%r4),%r5
 	addi    1,%r5,%r5
 	stw     %r5,52(%r4)
-
-	/* MP_FIXME: synchronize all processors. */
 
 	/* Setup stack pointer. */
 
