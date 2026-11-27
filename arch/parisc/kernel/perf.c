@@ -43,6 +43,7 @@
 #include <asm/io.h>		/* for __raw_read() */
 
 #include "perf_images.h"
+#include "perf_mako.h"
 
 #define MAX_RDR_WORDS	24
 #define PERF_VERSION	2	/* derived from hpux's PI v2 interface */
@@ -56,6 +57,7 @@ struct rdr_tbl_ent {
 
 static int perf_processor_interface __read_mostly = UNKNOWN_INTF;
 static int perf_enabled __read_mostly;
+static bool perf_mako __ro_after_init;
 static DEFINE_SPINLOCK(perf_lock);
 static struct parisc_device *cpu_device __read_mostly;
 
@@ -140,7 +142,7 @@ static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 };
 
 /*
- * RDR register descriptions for PCX-W2 (PA-8700). RDR11, RDR12, RDR13,
+ * RDR register descriptions for PCX-W2 (PA-8700).  RDR11, RDR12, RDR13,
  * RDR22, RDR23, RDR27 and RDR30 differ from PCX-W.
  */
 static const struct rdr_tbl_ent perf_rdr_tbl_piranha[] = {
@@ -213,7 +215,7 @@ static const uint64_t perf_bitmasks_piranha[] = {
 };
 
 static const uint64_t *bitmask_array;   /* array of bitmasks to use */
-static const struct rdr_tbl_ent *perf_rdr_tbl_cuda __ro_after_init;
+static const struct rdr_tbl_ent *perf_rdr_tbl_cuda __read_mostly;
 
 /******************************************************************************
  * Function Prototypes
@@ -333,15 +335,18 @@ static ssize_t perf_write(struct file *file, const char __user *buf,
 	uint32_t interface_type;
 	uint32_t test;
 
+	if (!perfmon_capable())
+		return -EACCES;
+
+	if (perf_mako)
+		return perf_mako_write(buf, count);
+
 	if (perf_processor_interface == ONYX_INTF)
 		image_size = PCXU_IMAGE_SIZE;
 	else if (perf_processor_interface == CUDA_INTF)
 		image_size = PCXW_IMAGE_SIZE;
 	else
 		return -EFAULT;
-
-	if (!perfmon_capable())
-		return -EACCES;
 
 	if (count != sizeof(uint32_t))
 		return -EIO;
@@ -474,11 +479,17 @@ static long perf_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	    case PA_PERF_ON:
 			/* Start the counters */
-			perf_start_counters();
+			if (perf_mako)
+				error = perf_mako_start();
+			else
+				perf_start_counters();
 			break;
 
 	    case PA_PERF_OFF:
-			error_start = perf_stop_counters(raddr);
+			if (perf_mako)
+				error_start = perf_mako_stop(raddr);
+			else
+				error_start = perf_stop_counters(raddr);
 			if (error_start != 0) {
 				printk(KERN_ERR "perf_off: perf_stop_counters = %ld\n", error_start);
 				error = -EFAULT;
@@ -540,12 +551,12 @@ static int __init perf_init(void)
 		 boot_cpu_data.cpu_type == mako2) {
 		perf_processor_interface = CUDA_INTF;
 		perf_rdr_tbl_cuda = perf_rdr_tbl_W;
-		if (boot_cpu_data.cpu_type == pcxw2)
+		if (boot_cpu_data.cpu_type == pcxw2) {
 			perf_rdr_tbl_cuda = perf_rdr_tbl_piranha;
-		if (boot_cpu_data.cpu_type == pcxw2 ||
-		    boot_cpu_data.cpu_type == mako ||
-		    boot_cpu_data.cpu_type == mako2)
 			bitmask_array = perf_bitmasks_piranha;
+		}
+		perf_mako = boot_cpu_data.cpu_type == mako ||
+			    boot_cpu_data.cpu_type == mako2;
 	} else {
 		perf_processor_interface = UNKNOWN_INTF;
 		printk("Performance monitoring counters not supported on this processor\n");

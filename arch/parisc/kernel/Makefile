@@ -32,8 +32,8 @@ obj-$(CONFIG_64BIT)	+= sys_parisc32.o signal32.o
 obj-$(CONFIG_STACKTRACE)+= stacktrace.o
 obj-$(CONFIG_AUDIT)	+= audit.o
 obj64-$(CONFIG_AUDIT)	+= compat_audit.o
-# only supported for PCX-W/U in 64-bit mode at the moment
-obj-$(CONFIG_64BIT)	+= perf.o perf_asm.o $(obj64-y)
+# only supported in 64-bit mode at the moment
+obj-$(CONFIG_64BIT)	+= perf.o perf_mako.o perf_asm.o $(obj64-y)
 obj-$(CONFIG_GENERIC_ARCH_TOPOLOGY)	+= topology.o
 obj-$(CONFIG_FUNCTION_TRACER)		+= ftrace.o
 obj-$(CONFIG_FUNCTION_GRAPH_TRACER)	+= ftrace.o
