@@ -47,10 +47,12 @@
 
 #define HPMC_IODC_BUF_SIZE 0x8000
 
+#ifndef CONFIG_64BIT
 	__PAGE_ALIGNED_BSS
 	.align 4096
 hpmc_iodc_buf:
 	.block HPMC_IODC_BUF_SIZE
+#endif
 
 	.section .bss
 	.align 8
@@ -201,6 +203,13 @@ os_hpmc_3:
 
 	/* FIXME? Check for errors from PDC_IO (-1 might be OK) */
 
+#ifndef CONFIG_64BIT
+	/*
+	 * The IODC calls below pass arguments 4 and up only on the stack,
+	 * which wide firmware does not accept. parisc_terminate() prints
+	 * through the kernel's console driver anyway.
+	 */
+
 	/*
 	 * Initialize the IODC console device (HPA,SPA, path etc.
 	 * are stored on page 0.
@@ -251,6 +260,7 @@ os_hpmc_4:
 
 os_hpmc_5:
 	comib,<>  0,ret0,os_hpmc_fail
+#endif
 
 	/* Prepare to call intr_save */
 
