@@ -32,6 +32,169 @@
 ;
 	.text
 
+;
+; Read diagnose register 2
+;
+ENTRY(perf_get_dr2)
+	.proc
+	.callinfo  frame=0,NO_CALLS
+	.entry
+	MFDIAG_2	(28)
+	bve	(%r2)
+	nop
+	.exit
+	.procend
+ENDPROC(perf_get_dr2)
+
+;
+; Write diagnose register 2
+;
+ENTRY(perf_set_dr2)
+	.proc
+	.callinfo  frame=0,NO_CALLS
+	.entry
+	bve	(%r2)
+	MTDIAG_2	(26)
+	.exit
+	.procend
+ENDPROC(perf_set_dr2)
+
+;***********************************************************************
+;*
+;* PA-8800/PA-8900 (Mako) RDR access
+;*
+;* Mako has two RDR chains, selected by bit 0x10000 of the STDIAG and
+;* SFDIAG instructions. Chain 0 is private to each core and chain 1 is
+;* shared by the two cores of a processor. The sequences below are the
+;* ones the C8000 PDC 2.13 firmware uses (tables at 0x1d6fc0 and 0x1d8000
+;* in the PDC0213 image), one 64-byte entry per RDR, indexed by
+;* rdr + 32 * chain. The caller must hold the DR2 chain 1 handshake for
+;* chain 1 accesses.
+;*
+;***********************************************************************
+
+#define MAKO_STDIAG(dr, ch)	.word 0x14000AA0 + (dr)*0x200000 + (ch)*0x10000
+#define MAKO_SFDIAG(dr, ch)	.word 0x14000BA0 + (dr)*0x200000 + (ch)*0x10000
+
+	.macro	mako_sfdiag_ent rdr, ch
+	MAKO_SFDIAG(\rdr, \ch)
+	ssm	0,%r0
+	MFDIAG_1	(28)
+	ssm	0,%r0
+	b,n	perf_mako_rdr_read_leave
+	.rept	11
+	nop
+	.endr
+	.endm
+
+	.macro	mako_stdiag_ent rdr, ch
+	.if (\ch == 0 && (\rdr == 3 || (\rdr >= 7 && \rdr <= 9))) || \
+	    (\ch == 1 && (\rdr == 4 || \rdr == 10 || \rdr == 11))
+	ssm	0,%r0			; no leading sync for these
+	nop
+	nop
+	nop
+	MAKO_STDIAG(\rdr, \ch)
+	.elseif \ch == 0 && (\rdr == 10 || \rdr == 11)
+	sync				; RDR10/11 are written with RDR26/27
+	ssm	0,%r0
+	nop
+	MAKO_STDIAG(\rdr, 0)
+	MAKO_STDIAG(\rdr + 16, 0)
+	.elseif \ch == 0 && (\rdr == 26 || \rdr == 27)
+	sync
+	ssm	0,%r0
+	nop
+	MAKO_STDIAG(\rdr, 0)
+	MAKO_STDIAG(\rdr - 16, 0)
+	.else
+	sync
+	ssm	0,%r0
+	nop
+	nop
+	MAKO_STDIAG(\rdr, \ch)
+	.endif
+	ssm	0,%r0
+	b,n	perf_mako_rdr_write_leave
+	.rept	9
+	nop
+	.endr
+	.endm
+
+;
+; uint64_t perf_mako_rdr_read(unsigned long index)
+;
+; Shift the next 64 bits out of RDR (index & 31) on chain (index >> 5)
+; and return them.
+;
+	.align	64
+ENTRY(perf_mako_rdr_read)
+	.proc
+	.callinfo frame=0,NO_CALLS
+	.entry
+	depdi,z		1,DR2_SLOW_RET,1,%r29
+	MFDIAG_2	(24)
+	or		%r24,%r29,%r29
+	MTDIAG_2	(29)			; set DR2_SLOW_RET
+	extrd,u		arg0,63,6,%r1
+	shladd		%r1,3,%r0,%r1		; 64 bytes per entry
+	.rept	8
+	nop
+	.endr
+	blr		%r1,%r0
+	nop
+
+	; 64-byte aligned here
+	.irp	ch, 0, 1
+	.irp	rdr, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+	mako_sfdiag_ent	\rdr, \ch
+	.endr
+	.endr
+
+perf_mako_rdr_read_leave:
+	bve		(%r2)
+	.exit
+	MTDIAG_2	(24)			; restore DR2
+	.procend
+ENDPROC(perf_mako_rdr_read)
+
+;
+; void perf_mako_rdr_write(unsigned long index, uint64_t value)
+;
+; Shift value into RDR (index & 31) on chain (index >> 5).
+;
+	.align	64
+ENTRY(perf_mako_rdr_write)
+	.proc
+	.callinfo frame=0,NO_CALLS
+	.entry
+	depdi,z		1,DR2_SLOW_RET,1,%r24
+	MFDIAG_2	(23)
+	or		%r24,%r23,%r24
+	MTDIAG_2	(24)			; set DR2_SLOW_RET
+	MTDIAG_1	(25)			; data to the staging register
+	extrd,u		arg0,63,6,%r1
+	shladd		%r1,3,%r0,%r1		; 64 bytes per entry
+	.rept	7
+	nop
+	.endr
+	blr		%r1,%r0
+	nop
+
+	; 64-byte aligned here
+	.irp	ch, 0, 1
+	.irp	rdr, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+	mako_stdiag_ent	\rdr, \ch
+	.endr
+	.endr
+
+perf_mako_rdr_write_leave:
+	bve		(%r2)
+	.exit
+	MTDIAG_2	(23)			; restore DR2
+	.procend
+ENDPROC(perf_mako_rdr_write)
+
 ENTRY(perf_intrigue_enable_perf_counters)
 	.proc
 	.callinfo  frame=0,NO_CALLS
