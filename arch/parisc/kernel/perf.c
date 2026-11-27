@@ -140,6 +140,45 @@ static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 };
 
 /*
+ * RDR register descriptions for PCX-W2 (PA-8700). RDR11, RDR12, RDR13,
+ * RDR22, RDR23, RDR27 and RDR30 differ from PCX-W.
+ */
+static const struct rdr_tbl_ent perf_rdr_tbl_piranha[] = {
+	{ 19,	1,	8 },              /* RDR 0 */
+	{ 32,	1,	16 },             /* RDR 1 */
+	{ 20,	1,	0 },              /* RDR 2 */
+	{ 0,	0,	0 },              /* RDR 3 */
+	{ 344,	6,	0 },              /* RDR 4 */
+	{ 176,	3,	0 },              /* RDR 5 */
+	{ 336,	6,	0 },              /* RDR 6 */
+	{ 0,	0,	0 },              /* RDR 7 */
+	{ 0,	0,	0 },              /* RDR 8 */
+	{ 0,	0,	0 },              /* RDR 9 */
+	{ 28,	1,	0 },              /* RDR 10 */
+	{ 32,	1,	0 },              /* RDR 11 */
+	{ 704,	11,	0 },              /* RDR 12 */
+	{ 704,	11,	0 },              /* RDR 13 */
+	{ 32,	1,	0 },              /* RDR 14 */
+	{ 128,	2,	0 },              /* RDR 15 */
+	{ 1494,	24,	0 },              /* RDR 16 */
+	{ 18,	1,	0 },              /* RDR 17 */
+	{ 4,	1,	0 },              /* RDR 18 */
+	{ 0,	0,	0 },              /* RDR 19 */
+	{ 158,	3,	24 },             /* RDR 20 */
+	{ 158,	3,	24 },             /* RDR 21 */
+	{ 210,	4,	48 },             /* RDR 22 */
+	{ 210,	4,	48 },             /* RDR 23 */
+	{ 71,	2,	0 },              /* RDR 24 */
+	{ 71,	2,	0 },              /* RDR 25 */
+	{ 28,	1,	0 },              /* RDR 26 */
+	{ 32,	1,	0 },              /* RDR 27 */
+	{ 88,	2,	0 },              /* RDR 28 */
+	{ 32,	1,	0 },              /* RDR 29 */
+	{ 32,	1,	0 },              /* RDR 30 */
+	{ 16,	1,	0 },              /* RDR 31 */
+};
+
+/*
  * A non-zero write_control in the above tables is a byte offset into
  * this array.
  */
@@ -174,6 +213,7 @@ static const uint64_t perf_bitmasks_piranha[] = {
 };
 
 static const uint64_t *bitmask_array;   /* array of bitmasks to use */
+static const struct rdr_tbl_ent *perf_rdr_tbl_cuda __ro_after_init;
 
 /******************************************************************************
  * Function Prototypes
@@ -499,6 +539,9 @@ static int __init perf_init(void)
 		 boot_cpu_data.cpu_type == mako ||
 		 boot_cpu_data.cpu_type == mako2) {
 		perf_processor_interface = CUDA_INTF;
+		perf_rdr_tbl_cuda = perf_rdr_tbl_W;
+		if (boot_cpu_data.cpu_type == pcxw2)
+			perf_rdr_tbl_cuda = perf_rdr_tbl_piranha;
 		if (boot_cpu_data.cpu_type == pcxw2 ||
 		    boot_cpu_data.cpu_type == mako ||
 		    boot_cpu_data.cpu_type == mako2)
@@ -643,7 +686,7 @@ static const struct rdr_tbl_ent * perf_rdr_get_entry(uint32_t rdr_num)
 	if (perf_processor_interface == ONYX_INTF) {
 		return &perf_rdr_tbl_U[rdr_num];
 	} else {
-		return &perf_rdr_tbl_W[rdr_num];
+		return &perf_rdr_tbl_cuda[rdr_num];
 	}
 }
 
