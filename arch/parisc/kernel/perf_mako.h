@@ -37,6 +37,17 @@ enum {
 	MAKO_CTR0_DTLB,		/* data TLB misses */
 	MAKO_CTR0_ITLB,		/* instruction TLB misses */
 	MAKO_CTR0_INSNS,	/* instructions retired and not nullified */
+	MAKO_CTR0_STORES,	/* stores retired */
+};
+
+/* What ctr2 counts, in the default event set */
+enum {
+	MAKO_CTR2_INSNS,	/* instructions retired, maybe filtered */
+	MAKO_CTR2_MEMOPS,	/* loads and stores, few of those that miss */
+	MAKO_CTR2_DMISSES,	/* loads and stores that miss the D-cache */
+	MAKO_CTR2_STORE_DMISSES, /* stores that miss the D-cache */
+	MAKO_CTR2_BRANCHES,	/* branches retired */
+	MAKO_CTR2_TAKEN,	/* taken branches retired */
 };
 
 /*
@@ -47,7 +58,8 @@ enum {
 struct perf_mako_config {
 	unsigned int	set;		/* MAKO_EVENTS_* */
 	unsigned int	ctr0;		/* MAKO_CTR0_* */
-	bool		filter;
+	unsigned int	ctr2;		/* MAKO_CTR2_* */
+	bool		filter;		/* filter MAKO_CTR2_INSNS */
 	bool		invert;
 	uint32_t	mask;
 	uint32_t	match;

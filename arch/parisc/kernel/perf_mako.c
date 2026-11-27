@@ -15,6 +15,7 @@
  * are only started on a CPU once the image has been loaded there.
  */
 
+#include <linux/bitfield.h>
 #include <linux/bug.h>
 #include <linux/errno.h>
 #include <linux/iopoll.h>
@@ -63,7 +64,18 @@
  * misses; bit 6 leaves out the data TLB misses and bit 7 the instruction
  * TLB misses. With bit 3 set it counts retired instructions that are not
  * nullified, and bits 4-7 each leave out the instructions at one of the
- * four word offsets in an aligned 16-byte block.
+ * four word offsets in an aligned 16-byte block. With bit 3 set, RDR0_0
+ * bit 11 makes it count stores instead.
+ *
+ * RDR0_0 bits 0-4 select what ctr2 counts: instructions (the image's
+ * 01000), loads and stores (00100) or loads and stores that miss the
+ * D-cache (00101). The loads and stores count leaves out most of the
+ * accesses that miss. Bit 13 narrows either count to stores.
+ *
+ * The match filter set to opcodes 0x20-0x3f, with RDR4_0 bit 247 clear and
+ * bits 266, 268 and 271-276 set, counts branches on ctr2. RDR4_0 bytes
+ * 0-3 set to a0 80 80 a0 count taken branches. Both settings come from the
+ * PCX-W (PA-8500 to PA-8700) branch images.
  *
  * RDR bits are numbered from the most significant bit of the first
  * doubleword.
@@ -79,10 +91,22 @@
 #define MAKO_RDR4_0_CTR0_INSNS	3
 #define MAKO_RDR4_0_CTR0_NO_DTLB	6
 #define MAKO_RDR4_0_CTR0_NO_ITLB	7
+#define MAKO_RDR4_0_BRANCH	247
+#define MAKO_RDR4_0_TAKEN	0xa08080a0U
+#define MAKO_RDR0_0_CLASS	GENMASK_ULL(63, 59)
+#define MAKO_RDR0_0_MEMOPS	0x04
+#define MAKO_RDR0_0_DMISSES	0x05
+#define MAKO_RDR0_0_CTR0_STORES	11
+#define MAKO_RDR0_0_CTR2_STORES	13
+
+static const unsigned int perf_mako_rdr4_0_branch_set[] = {
+	266, 268, 271, 272, 273, 274, 275, 276,
+};
 
 struct perf_mako_cpu {
 	bool			loaded;
 	struct perf_mako_config	cfg;
+	uint64_t		rdr0_0[ARRAY_SIZE(perf_mako_rdr0_0)];
 	uint64_t		rdr4_0[ARRAY_SIZE(perf_mako_rdr4_0)];
 	uint64_t		rdr16_1[ARRAY_SIZE(perf_mako_rdr16_1)];
 };
@@ -190,33 +214,62 @@ static void perf_mako_set_bit(uint64_t *buf, unsigned int bit, bool val)
 		buf[bit / 64] &= ~m;
 }
 
-/* Build this CPU's copies of RDR4_0 and RDR16_1 for cfg. */
+/* Build this CPU's copies of RDR0_0, RDR4_0 and RDR16_1 for cfg. */
 static int perf_mako_build(struct perf_mako_cpu *pc,
 			   const struct perf_mako_config *cfg)
 {
 	bool core_b = perf_mako_core_b();
+	bool filter = cfg->filter;
+	uint32_t mask = cfg->mask, match = cfg->match;
 	unsigned int j;
 
 	if (cfg->set == MAKO_EVENTS_TLB_HANDLER && core_b)
 		return -EOPNOTSUPP;
 
+	memcpy(pc->rdr0_0, perf_mako_rdr0_0, sizeof(pc->rdr0_0));
+	if (cfg->ctr2 == MAKO_CTR2_MEMOPS) {
+		pc->rdr0_0[0] &= ~MAKO_RDR0_0_CLASS;
+		pc->rdr0_0[0] |= FIELD_PREP(MAKO_RDR0_0_CLASS, MAKO_RDR0_0_MEMOPS);
+	} else if (cfg->ctr2 == MAKO_CTR2_DMISSES ||
+		   cfg->ctr2 == MAKO_CTR2_STORE_DMISSES) {
+		pc->rdr0_0[0] &= ~MAKO_RDR0_0_CLASS;
+		pc->rdr0_0[0] |= FIELD_PREP(MAKO_RDR0_0_CLASS, MAKO_RDR0_0_DMISSES);
+	}
+	if (cfg->ctr2 == MAKO_CTR2_STORE_DMISSES)
+		perf_mako_set_bit(pc->rdr0_0, MAKO_RDR0_0_CTR2_STORES, true);
+	if (cfg->ctr0 == MAKO_CTR0_STORES)
+		perf_mako_set_bit(pc->rdr0_0, MAKO_RDR0_0_CTR0_STORES, true);
+
 	memcpy(pc->rdr4_0, perf_mako_rdr4_0, sizeof(pc->rdr4_0));
+	if (cfg->ctr2 == MAKO_CTR2_TAKEN) {
+		pc->rdr4_0[0] &= ~GENMASK_ULL(63, 32);
+		pc->rdr4_0[0] |= (uint64_t)MAKO_RDR4_0_TAKEN << 32;
+	}
 	if (cfg->ctr0 == MAKO_CTR0_DTLB)
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_ITLB, true);
 	else if (cfg->ctr0 == MAKO_CTR0_ITLB)
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_DTLB, true);
-	else if (cfg->ctr0 == MAKO_CTR0_INSNS)
+	else if (cfg->ctr0 == MAKO_CTR0_INSNS || cfg->ctr0 == MAKO_CTR0_STORES)
 		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_INSNS, true);
-	if (cfg->filter) {
+	if (cfg->ctr2 == MAKO_CTR2_BRANCHES) {
+		filter = true;
+		mask = match = 0x80000000;
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_BRANCH, false);
+		for (j = 0; j < ARRAY_SIZE(perf_mako_rdr4_0_branch_set); j++)
+			perf_mako_set_bit(pc->rdr4_0,
+					  perf_mako_rdr4_0_branch_set[j], true);
+	}
+	if (filter) {
 		for (j = 0; j < 32; j++) {
 			uint32_t b = 1U << (31 - j);
 
 			perf_mako_set_bit(pc->rdr4_0, j <= 18 ? 145 - j : 282 - j,
-					  !(cfg->mask & b));
+					  !(mask & b));
 			perf_mako_set_bit(pc->rdr4_0, j <= 18 ? 108 + j : 205 + j,
-					  cfg->match & b);
+					  match & b);
 		}
-		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_INVERT, cfg->invert);
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_INVERT,
+				  cfg->filter && cfg->invert);
 	}
 
 	memcpy(pc->rdr16_1, perf_mako_rdr16_1, sizeof(pc->rdr16_1));
@@ -368,6 +421,8 @@ int perf_mako_load(const struct perf_mako_config *cfg)
 		 */
 		if (r->chain == 1 && r->rdr == 15)
 			perf_mako_ctrs_rw(ctrs, true);
+		else if (r->chain == 0 && r->rdr == 0)
+			perf_mako_rdr_merge(r, pc->rdr0_0);
 		else if (r->chain == 0 && r->rdr == 4)
 			perf_mako_rdr_merge(r, pc->rdr4_0);
 		else if (r->chain == 1 && r->rdr == 16)
@@ -436,7 +491,7 @@ void perf_mako_disable(void)
 static bool perf_mako_cfg_equal(const struct perf_mako_config *a,
 				const struct perf_mako_config *b)
 {
-	return a->set == b->set && a->ctr0 == b->ctr0 &&
+	return a->set == b->set && a->ctr0 == b->ctr0 && a->ctr2 == b->ctr2 &&
 	       a->filter == b->filter &&
 	       (!a->filter || (a->invert == b->invert &&
 			       a->mask == b->mask && a->match == b->match));

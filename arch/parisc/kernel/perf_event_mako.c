@@ -5,12 +5,17 @@
  * Each core has four 31-bit counters, which count fixed events chosen by
  * an event set (see perf_mako.c):
  *
- *   ctr0: TLB misses, instruction and data, or only one kind, or
- *         instructions retired and not nullified
+ *   ctr0: TLB misses, instruction and data, or only one kind,
+ *         instructions retired and not nullified, or stores
  *   ctr1, ctr3: cycles, stall cycles, non-stall cycles or, on the first
  *               core of a processor, cycles handling TLB misses
- *   ctr2: instructions retired, optionally filtered by instruction, or
- *         instructions retired in non-stall cycles
+ *   ctr2: instructions retired, optionally filtered by instruction,
+ *         instructions retired in non-stall cycles, loads and stores,
+ *         D-cache misses, store D-cache misses, branches or taken branches
+ *
+ * ctr2's loads and stores count leaves out most of the accesses that miss
+ * the D-cache: a loop of loads or stores that all miss counts about 0.2
+ * of them.
  *
  * The counters do not interrupt, so only counting is supported, and they
  * count in all privilege levels. A counter wraps from 0x7fffffff to 0 and
@@ -56,6 +61,12 @@ enum {
 	MAKO_EV_ITLB_MISSES,
 	MAKO_EV_NONNULLIFIED_INSTRUCTIONS,
 	MAKO_EV_TLB_HANDLER_CYCLES,
+	MAKO_EV_MEM_ACCESSES,
+	MAKO_EV_DCACHE_MISSES,
+	MAKO_EV_STORES,
+	MAKO_EV_STORE_DCACHE_MISSES,
+	MAKO_EV_BRANCHES,
+	MAKO_EV_TAKEN_BRANCHES,
 	MAKO_EV_MAX,
 };
 
@@ -76,6 +87,21 @@ static const struct {
 	[MAKO_EV_ITLB_MISSES]		= { BIT(0), MAKO_EVENTS_DEFAULT },
 	[MAKO_EV_NONNULLIFIED_INSTRUCTIONS] = { BIT(0), MAKO_EVENTS_DEFAULT },
 	[MAKO_EV_TLB_HANDLER_CYCLES]	= { BIT(1) | BIT(3), MAKO_EVENTS_TLB_HANDLER },
+	[MAKO_EV_MEM_ACCESSES]		= { BIT(2), MAKO_EVENTS_DEFAULT },
+	[MAKO_EV_DCACHE_MISSES]		= { BIT(2), MAKO_EVENTS_DEFAULT },
+	[MAKO_EV_STORES]		= { BIT(0), MAKO_EVENTS_DEFAULT },
+	[MAKO_EV_STORE_DCACHE_MISSES]	= { BIT(2), MAKO_EVENTS_DEFAULT },
+	[MAKO_EV_BRANCHES]		= { BIT(2), MAKO_EVENTS_DEFAULT },
+	[MAKO_EV_TAKEN_BRANCHES]	= { BIT(2), MAKO_EVENTS_DEFAULT },
+};
+
+/* What ctr2 counts for each event that ctr2 can count. */
+static const u8 mako_ctr2[MAKO_EV_MAX] = {
+	[MAKO_EV_MEM_ACCESSES]		= MAKO_CTR2_MEMOPS,
+	[MAKO_EV_DCACHE_MISSES]		= MAKO_CTR2_DMISSES,
+	[MAKO_EV_STORE_DCACHE_MISSES]	= MAKO_CTR2_STORE_DMISSES,
+	[MAKO_EV_BRANCHES]		= MAKO_CTR2_BRANCHES,
+	[MAKO_EV_TAKEN_BRANCHES]	= MAKO_CTR2_TAKEN,
 };
 
 #define MAKO_CONFIG_EVENT	GENMASK_ULL(7, 0)
@@ -141,7 +167,12 @@ static bool mako_schedule(struct perf_event **events, int n, int *idx,
 		idx[i] = __ffs(free);
 		used |= BIT(idx[i]);
 
-		if (code == MAKO_EV_DTLB_MISSES)
+		if (mako_ctr2[code])
+			cfg->ctr2 = mako_ctr2[code];
+
+		if (code == MAKO_EV_STORES)
+			cfg->ctr0 = MAKO_CTR0_STORES;
+		else if (code == MAKO_EV_DTLB_MISSES)
 			cfg->ctr0 = MAKO_CTR0_DTLB;
 		else if (code == MAKO_EV_ITLB_MISSES)
 			cfg->ctr0 = MAKO_CTR0_ITLB;
@@ -382,6 +413,8 @@ static int mako_map_hw(u64 config)
 		return MAKO_EV_CYCLES;
 	case PERF_COUNT_HW_INSTRUCTIONS:
 		return MAKO_EV_INSTRUCTIONS;
+	case PERF_COUNT_HW_BRANCH_INSTRUCTIONS:
+		return MAKO_EV_BRANCHES;
 	default:
 		return -ENOENT;
 	}
@@ -479,6 +512,12 @@ MAKO_EVENT_ATTR(dtlb-misses, 7);
 MAKO_EVENT_ATTR(itlb-misses, 8);
 MAKO_EVENT_ATTR(nonnullified-instructions, 9);
 MAKO_EVENT_ATTR(tlb-handler-cycles, 10);
+MAKO_EVENT_ATTR(mem-accesses, 11);
+MAKO_EVENT_ATTR(dcache-misses, 12);
+MAKO_EVENT_ATTR(stores, 13);
+MAKO_EVENT_ATTR(store-dcache-misses, 14);
+MAKO_EVENT_ATTR(branches, 15);
+MAKO_EVENT_ATTR(taken-branches, 16);
 
 static struct attribute *mako_event_attrs[] = {
 	&mako_attr_0.attr.attr,
@@ -491,6 +530,12 @@ static struct attribute *mako_event_attrs[] = {
 	&mako_attr_8.attr.attr,
 	&mako_attr_9.attr.attr,
 	&mako_attr_10.attr.attr,
+	&mako_attr_11.attr.attr,
+	&mako_attr_12.attr.attr,
+	&mako_attr_13.attr.attr,
+	&mako_attr_14.attr.attr,
+	&mako_attr_15.attr.attr,
+	&mako_attr_16.attr.attr,
 	NULL,
 };
 
