@@ -67,8 +67,8 @@ static const int perf_rdrs_W[] =
 static const int perf_rdrs_U[] =
 	{ 0, 1, 4, 5, 6, 7, 16, 17, 18, 20, 21, 22, 23, 24, 25, -1 };
 
-/* RDR register descriptions for PCX-W */
-static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
+/* RDR register descriptions for PCX-U */
+static const struct rdr_tbl_ent perf_rdr_tbl_U[] = {
 	{ 19,	1,	8 },   /* RDR 0 */
 	{ 16,	1,	16 },  /* RDR 1 */
 	{ 72,	2,	0 },   /* RDR 2 */
@@ -103,8 +103,8 @@ static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 	{ 16,	1,	0 },   /* RDR 31 */
 };
 
-/* RDR register descriptions for PCX-U */
-static const struct rdr_tbl_ent perf_rdr_tbl_U[] = {
+/* RDR register descriptions for PCX-W */
+static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 	{ 19,	1,	8 },              /* RDR 0 */
 	{ 32,	1,	16 },             /* RDR 1 */
 	{ 20,	1,	0 },              /* RDR 2 */
@@ -147,10 +147,10 @@ static const uint64_t perf_bitmasks[] = {
 	0x0000000000000000ul,     /* first dbl word must be zero */
 	0xfdffe00000000000ul,     /* RDR0 bitmask */
 	0x003f000000000000ul,     /* RDR1 bitmask */
-	0x00fffffffffffffful,     /* RDR20-RDR21 bitmask (152 bits) */
+	0x00fffffffffffffful,     /* RDR20-RDR21 bitmask (158 bits) */
 	0xfffffffffffffffful,
 	0xfffffffc00000000ul,
-	0xfffffffffffffffful,     /* RDR22-RDR23 bitmask (233 bits) */
+	0xfffffffffffffffful,     /* RDR22-RDR23 bitmask (194 bits) */
 	0xfffffffffffffffful,
 	0xfffffffffffffffcul,
 	0xff00000000000000ul
