@@ -290,7 +290,7 @@ printk("Preparing to start counters\n");
 static int perf_open(struct inode *inode, struct file *file)
 {
 	spin_lock(&perf_lock);
-	if (perf_enabled) {
+	if (perf_enabled || (perf_mako && !perf_mako_dev_get())) {
 		spin_unlock(&perf_lock);
 		return -EBUSY;
 	}
@@ -307,6 +307,8 @@ static int perf_release(struct inode *inode, struct file *file)
 {
 	spin_lock(&perf_lock);
 	perf_enabled = 0;
+	if (perf_mako)
+		perf_mako_dev_put();
 	spin_unlock(&perf_lock);
 
 	return 0;

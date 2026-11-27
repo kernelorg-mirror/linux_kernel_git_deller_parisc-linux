@@ -20,7 +20,10 @@
 #include <linux/iopoll.h>
 #include <linux/irqflags.h>
 #include <linux/kernel.h>
+#include <linux/lockdep.h>
 #include <linux/percpu.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/uaccess.h>
 #include <asm/perf.h>
 #include <asm/special_insns.h>
@@ -35,12 +38,103 @@
 #define MAKO_RDR9_1_CONFIG	(1ULL << 56)
 #define MAKO_CCR_PERF		0x20
 
-static DEFINE_PER_CPU(bool, perf_mako_loaded);
+/*
+ * RDR4_0 bits 0-7 select what ctr0 counts. With bit 3 clear it counts TLB
+ * misses; bit 6 leaves out the data TLB misses and bit 7 the instruction
+ * TLB misses. With bit 3 set it counts retired instructions that are not
+ * nullified, and bits 4-7 each leave out the instructions at one of the
+ * four word offsets in an aligned 16-byte block.
+ *
+ * RDR bits are numbered from the most significant bit of the first
+ * doubleword.
+ */
+#define MAKO_RDR4_0_CTR0_INSNS	3
+#define MAKO_RDR4_0_CTR0_NO_DTLB	6
+#define MAKO_RDR4_0_CTR0_NO_ITLB	7
+
+struct perf_mako_cpu {
+	bool			loaded;
+	struct perf_mako_config	cfg;
+	uint64_t		rdr4_0[ARRAY_SIZE(perf_mako_rdr4_0)];
+};
+
+static DEFINE_PER_CPU(struct perf_mako_cpu, perf_mako_cpu);
+
+/* /dev/perf loads the default configuration. */
+static const struct perf_mako_config perf_mako_dev_cfg;
+
+/* /dev/perf and perf events must not program the counters at once. */
+static DEFINE_SPINLOCK(perf_mako_owner_lock);
+static bool perf_mako_dev_open;
+static unsigned int perf_mako_pmu_users;
+
+bool perf_mako_dev_get(void)
+{
+	bool ok;
+
+	spin_lock(&perf_mako_owner_lock);
+	ok = !perf_mako_pmu_users;
+	if (ok)
+		perf_mako_dev_open = true;
+	spin_unlock(&perf_mako_owner_lock);
+
+	return ok;
+}
+
+void perf_mako_dev_put(void)
+{
+	spin_lock(&perf_mako_owner_lock);
+	perf_mako_dev_open = false;
+	spin_unlock(&perf_mako_owner_lock);
+}
+
+bool perf_mako_pmu_get(void)
+{
+	bool ok;
+
+	spin_lock(&perf_mako_owner_lock);
+	ok = !perf_mako_dev_open;
+	if (ok)
+		perf_mako_pmu_users++;
+	spin_unlock(&perf_mako_owner_lock);
+
+	return ok;
+}
+
+void perf_mako_pmu_put(void)
+{
+	spin_lock(&perf_mako_owner_lock);
+	perf_mako_pmu_users--;
+	spin_unlock(&perf_mako_owner_lock);
+}
 
 /* The second core of a processor, which owns the second half of RDR15_1. */
 static bool perf_mako_core_b(void)
 {
 	return perf_get_dr2() & MAKO_DR2_CORE;
+}
+
+static void perf_mako_set_bit(uint64_t *buf, unsigned int bit, bool val)
+{
+	uint64_t m = 1ULL << (63 - bit % 64);
+
+	if (val)
+		buf[bit / 64] |= m;
+	else
+		buf[bit / 64] &= ~m;
+}
+
+/* Build this CPU's copy of RDR4_0 for cfg. */
+static void perf_mako_build(struct perf_mako_cpu *pc,
+			    const struct perf_mako_config *cfg)
+{
+	memcpy(pc->rdr4_0, perf_mako_rdr4_0, sizeof(pc->rdr4_0));
+	if (cfg->ctr0 == MAKO_CTR0_DTLB)
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_ITLB, true);
+	else if (cfg->ctr0 == MAKO_CTR0_ITLB)
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_NO_DTLB, true);
+	else if (cfg->ctr0 == MAKO_CTR0_INSNS)
+		perf_mako_set_bit(pc->rdr4_0, MAKO_RDR4_0_CTR0_INSNS, true);
 }
 
 /*
@@ -138,16 +232,24 @@ static void perf_mako_ctrs_rw(uint64_t *buf, bool clear)
 }
 
 /*
- * Write the image and start the counters on this CPU, from zero. Called
- * with interrupts off. Like the firmware's boot-time load, this holds
- * chain 1 across the image write and pmenb.
+ * Write the image for cfg and start the counters on this CPU, from zero.
+ * Called with interrupts off. Like the firmware, this holds chain 1 across
+ * the image write and pmenb.
  */
-static int perf_mako_load(void)
+int perf_mako_load(const struct perf_mako_config *cfg)
 {
-	unsigned long ccr = mfctl(10);
+	struct perf_mako_cpu *pc = this_cpu_ptr(&perf_mako_cpu);
+	unsigned long ccr;
 	uint64_t ctrs[4];
 	int i, ret;
 
+	lockdep_assert_irqs_disabled();
+	perf_mako_build(pc, cfg);
+	if (pc->loaded)
+		perf_intrigue_disable_perf_counters();
+	pc->loaded = false;
+
+	ccr = mfctl(10);
 	mtctl(ccr | MAKO_CCR_PERF, 10);
 	ret = perf_mako_chain1_get();
 	if (ret)
@@ -164,6 +266,8 @@ static int perf_mako_load(void)
 		 */
 		if (r->chain == 1 && r->rdr == 15)
 			perf_mako_ctrs_rw(ctrs, true);
+		else if (r->chain == 0 && r->rdr == 4)
+			perf_mako_rdr_merge(r, pc->rdr4_0);
 		else
 			perf_mako_rdr_merge(r, r->data);
 	}
@@ -171,19 +275,28 @@ static int perf_mako_load(void)
 
 	asm volatile("pmenb" ::: "memory");
 	perf_mako_chain1_put();
-	this_cpu_write(perf_mako_loaded, true);
+	pc->cfg = *cfg;
+	pc->loaded = true;
 out:
 	mtctl(ccr, 10);
 	return ret;
 }
 
-/* Read this CPU's four counters. Called with interrupts off. */
-static int perf_mako_read(uint32_t *c)
+/*
+ * Read this CPU's four counters. Called with interrupts off and the
+ * counters stopped.
+ */
+int perf_mako_read(uint32_t *c)
 {
-	unsigned long ccr = mfctl(10);
+	unsigned long ccr;
 	uint64_t buf[4];
 	int i, w, ret;
 
+	lockdep_assert_irqs_disabled();
+	if (!this_cpu_read(perf_mako_cpu.loaded))
+		return -EINVAL;
+
+	ccr = mfctl(10);
 	mtctl(ccr | MAKO_CCR_PERF, 10);
 	ret = perf_mako_chain1_get();
 	if (ret)
@@ -202,31 +315,61 @@ out:
 	return ret;
 }
 
+/* Start or stop the counters of a loaded CPU. Called with interrupts off. */
+void perf_mako_enable(void)
+{
+	if (this_cpu_read(perf_mako_cpu.loaded))
+		perf_intrigue_enable_perf_counters();
+}
+
+void perf_mako_disable(void)
+{
+	if (this_cpu_read(perf_mako_cpu.loaded))
+		perf_intrigue_disable_perf_counters();
+}
+
+static bool perf_mako_cfg_equal(const struct perf_mako_config *a,
+				const struct perf_mako_config *b)
+{
+	return a->ctr0 == b->ctr0;
+}
+
+/*
+ * Whether cfg is loaded on this CPU and still in effect, so that the
+ * counters can be restarted without loading it again.
+ */
+bool perf_mako_is_loaded(const struct perf_mako_config *cfg)
+{
+	struct perf_mako_cpu *pc = this_cpu_ptr(&perf_mako_cpu);
+
+	return pc->loaded && perf_mako_cfg_equal(&pc->cfg, cfg);
+}
+
+/* PA_PERF_ON: load the default configuration, or restart. */
 int perf_mako_start(void)
 {
 	unsigned long flags;
 	int ret = 0;
 
 	local_irq_save(flags);
-	if (this_cpu_read(perf_mako_loaded))
-		perf_intrigue_enable_perf_counters();
+	if (perf_mako_is_loaded(&perf_mako_dev_cfg))
+		perf_mako_enable();
 	else
-		ret = perf_mako_load();
+		ret = perf_mako_load(&perf_mako_dev_cfg);
 	local_irq_restore(flags);
 
 	return ret;
 }
 
+/* PA_PERF_OFF */
 int perf_mako_stop(uint32_t *raddr)
 {
 	unsigned long flags;
-	int ret = -EINVAL;
+	int ret;
 
 	local_irq_save(flags);
-	if (this_cpu_read(perf_mako_loaded)) {
-		perf_intrigue_disable_perf_counters();
-		ret = perf_mako_read(raddr);
-	}
+	perf_mako_disable();
+	ret = perf_mako_read(raddr);
 	local_irq_restore(flags);
 
 	return ret;
@@ -251,9 +394,7 @@ ssize_t perf_mako_write(const char __user *buf, size_t count)
 		return -EINVAL;
 
 	local_irq_save(flags);
-	if (this_cpu_read(perf_mako_loaded))
-		perf_intrigue_disable_perf_counters();
-	ret = perf_mako_load();
+	ret = perf_mako_load(&perf_mako_dev_cfg);
 	local_irq_restore(flags);
 
 	return ret ? ret : count;
