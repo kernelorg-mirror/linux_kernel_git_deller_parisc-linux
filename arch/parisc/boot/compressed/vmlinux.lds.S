@@ -76,6 +76,9 @@ SECTIONS
 	. = ALIGN(8);
 	.bss : {
 		_bss = . ;
+		/* __PAGE_ALIGNED_BSS is only a .section directive in assembly. */
+		. = ALIGN(PAGE_SIZE);
+		*(.bss..page_aligned)
 		*(.bss)
 		*(.bss.*)
 		*(COMMON)
