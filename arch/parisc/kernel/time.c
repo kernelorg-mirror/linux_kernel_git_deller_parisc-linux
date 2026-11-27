@@ -229,7 +229,23 @@ void __init time_init(void)
 
 	/* check for free-running 64-bit platform counter */
 	parisc_find_64bit_counter();
-
-	/* register at clocksource framework */
-	clocksource_register_hz(&clocksource_cr16, cr16_clock_freq);
 }
+
+/*
+ * Registered once the secondary CPUs are up: time_init() runs before that,
+ * when num_online_cpus() is still 1.
+ */
+static int __init init_cr16_clocksource(void)
+{
+	/* The cr16 interval timers are not synchronized across CPUs. */
+	if (num_online_cpus() > 1 && !running_on_qemu) {
+		clocksource_cr16.name = "cr16_unstable";
+		clocksource_cr16.flags = CLOCK_SOURCE_UNSTABLE;
+		clocksource_cr16.rating = 0;
+	}
+
+	clocksource_register_hz(&clocksource_cr16, cr16_clock_freq);
+
+	return 0;
+}
+device_initcall(init_cr16_clocksource);
